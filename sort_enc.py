@@ -1,3 +1,4 @@
+import socket
 import torch
 import multiprocessing
 from multiprocessing.pool import Pool
@@ -10,6 +11,7 @@ import crypten
 import crypten.mpc as mpc
 import crypten.communicator as comm
 from common import build_fpath
+from common import *
 
 def compare_and_swap_joint(i, j, arr1, arr2 = None, isAsc = True):
     ''' arr1: sort by this array
@@ -92,15 +94,47 @@ def greatestPowerOfTwoLessThan(n):
         
 #     print(arr1_enc.get_plain_text()) 
 
-@mpc.run_multiprocess(world_size=2)
+@mpc.run_multiprocess(world_size = 2)
 def user_bitonic_sort(uid, userdata):
     crypto_data = crypten.cryptensor(userdata)
     length = len(crypto_data)
     bitonic_sort(crypto_data, 0, length, None, True)
-    torch.save(crypto_data.get_plain_text(), build_fpath(uid, "user-sorted"))
+    # torch.save(crypto_data.get_plain_text(), build_fpath(uid, "user-sorted")) 
+    num_iter = 0
+    while length > 0:
+        if length >= 1016:
+            data_iter = crypto_data[num_iter * 1024 : (num_iter + 1) * 1024]
+        else:
+            data_iter = crypto_data[-length-1:]
+        # rank(8) + bytes(1016)
+        bytes = longlist2bytes(data_iter._tensor._tensor.tolist())
+        bytes = comm.get().get_rank().to_bytes(8, "little", signed=False) + bytes
+        client.send(bytes)
+        length -= MAX_PACKET_LENGTH
+        num_iter += 1
+
+
+    
 
 uid = int(sys.argv[1])                          # get user id
-userdata = torch.load(build_fpath(uid))    # get user data
+
+client = socket.socket()
+client.connect((HOST, PORT))
+client.send(uid.to_bytes(4, byteorder="little", signed=False))
+
+length = int.from_bytes(client.recv(8), byteorder="little", signed=False)
+
+userdata_bytes = b''
+while length > 0:
+    msg = client.recv(1024 * 8)
+    userdata_bytes += msg
+    length -= 1024
+
+userdata_list = longbytes2list(userdata_bytes)
+print("=======")
+print(userdata_list)
+userdata = torch.tensor(userdata_list)
+# userdata = torch.load(build_fpath(uid))         # get user data
 
 crypten.init()                                  # initialize crypten for each instance
 user_bitonic_sort(uid, userdata)
